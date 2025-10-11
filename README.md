@@ -166,3 +166,30 @@ and the Hierarchical Reasoning Model (HRM):
 ```
 
 This code is based on the Hierarchical Reasoning Model [code](https://github.com/sapientinc/HRM) and the Hierarchical Reasoning Model Analysis [code](https://github.com/arcprize/hierarchical-reasoning-model-analysis).
+
+
+```bash
+
+python sonar_stuff/prepare_sonar_data.py \
+   --dataset-name wikitext \
+   --dataset-config wikitext-2-raw-v1 \
+   --train-samples 16384 \
+   --val-samples 1024 \
+   --seq-length 16 \
+   --output-dir data_chunks \
+   --chunk-size 1024 \
+   --batch-size 128
+  To train:
+
+/home/green/py312/bin/python3 train_sonar_trm.py \
+    --data_folder data_chunks \
+    --sonar_dim 1024 \
+    --batch_size 8 \
+    --lr 1e-4
+
+  To run inference:
+
+/home/green/py312/bin/python3 inference_sonar_trm.py \
+    --model_path sonar_trm_final.pt \
+    --data_folder data_chunks
+```

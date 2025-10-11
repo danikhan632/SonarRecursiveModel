@@ -1,0 +1,49 @@
+# Python bytecode and cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Virtual environments
+.env
+env/
+venv/
+.venv/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# --- Project-specific Ignores ---
+
+# Generated data, datasets, and embeddings
+data_chunks/
+
+# PyTorch saved tensor/model files
+# This will ignore tmp_*.pt and any generated models.
+*.pt
+
+# Model checkpoints directory
+checkpoints/
+
+# Experiment tracking logs and outputs
+outputs/
+wandb/
+mlruns/
+
+# Kaggle API credentials
+kaggle.json
+
+*.tex

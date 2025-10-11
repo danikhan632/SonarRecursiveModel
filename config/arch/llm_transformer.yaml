@@ -1,0 +1,12 @@
+batch_size: 32
+seq_len: 1024
+vocab_size: 32000 # Typical for a text tokenizer
+
+num_layers: 12
+hidden_size: 768
+expansion: 4.0
+num_heads: 12
+
+pos_encodings: "rope"
+
+forward_dtype: "bfloat16"

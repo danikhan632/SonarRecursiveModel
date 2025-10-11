@@ -1,0 +1,31 @@
+name: recursive_reasoning.recursive_llm@RecursiveLLM
+
+loss:
+  name: losses@ACTLossHead
+  loss_type: stablemax_cross_entropy
+
+
+
+seq_len: 128
+
+# Recursive parameters
+H_cycles: 3
+L_cycles: 3
+L_layers: 4
+
+# Transformer parameters
+hidden_size: 2048
+expansion: 2.0
+num_heads: 4
+pos_encodings: "rope"
+
+# ACT parameters
+halt_max_steps: 10
+halt_exploration_prob: 0.1
+no_ACT_continue: True
+
+forward_dtype: "bfloat16"
+
+# Pre-trained embedding settings
+pretrained_model_name: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0'
+freeze_embeddings: True
