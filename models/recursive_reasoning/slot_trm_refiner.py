@@ -339,10 +339,15 @@ class SlotTRMRefiner(nn.Module):
                 self.q_head.bias.fill_(-5.0)  # Start pessimistic
 
     def to_dtype(self, dtype: torch.dtype):
-        """Convert all Linear and LayerNorm layers to specified dtype"""
-        for module in self.modules():
-            if isinstance(module, (nn.Linear, nn.LayerNorm)):
-                module.to(dtype)
+        """Convert all parameters and buffers to specified dtype"""
+        # Convert all parameters
+        for name, param in self.named_parameters():
+            param.data = param.data.to(dtype)
+
+        # Convert all buffers
+        for name, buffer in self.named_buffers():
+            buffer.data = buffer.data.to(dtype)
+
         return self
 
     def forward(
@@ -403,10 +408,12 @@ class SlotTRMRefiner(nn.Module):
             if contexts:
                 # Average attention contexts across layers
                 attn_context = torch.stack(contexts).mean(dim=0)
+                attn_context = attn_context.to(module_dtype)  # Ensure correct dtype
             else:
                 attn_context = None
 
-            # Project into slots
+            # Project into slots (ensure h_block is correct dtype)
+            h_block = h_block.to(module_dtype)
             ctx_slot, reason_slot, refine_slot, conf_slot = self.slot_proj(
                 h_block, context=attn_context, prev_refine=prev_refine_slot
             )
@@ -417,7 +424,8 @@ class SlotTRMRefiner(nn.Module):
             # Compute delta update
             delta = self.delta_net(slots)  # [B, L, d_model]
 
-            # Compute per-token confidence for adaptive updating
+            # Compute per-token confidence for adaptive updating (ensure dtype)
+            conf_slot = conf_slot.to(module_dtype)
             confidence = self.confidence_head(conf_slot).squeeze(-1)  # [B, L]
 
             # ACT: Compute Q-values for halt/continue decisions
@@ -439,6 +447,7 @@ class SlotTRMRefiner(nn.Module):
 
             # Confidence-weighted update with stability scaling
             # High confidence = larger update, low confidence = smaller update
+            confidence = confidence.to(delta.dtype)  # Ensure confidence matches delta dtype
             delta = delta * confidence.unsqueeze(-1) * self.delta_scale
 
             # Conservative clamping for stability
@@ -447,7 +456,8 @@ class SlotTRMRefiner(nn.Module):
             # Apply update (only to non-halted sequences if using ACT)
             if self.use_act:
                 # Mask updates for halted sequences
-                delta = delta * (~halted).view(B, 1, 1).float()
+                halt_mask = (~halted).view(B, 1, 1).to(delta.dtype)  # Match delta dtype
+                delta = delta * halt_mask
 
             h = h + delta
 
