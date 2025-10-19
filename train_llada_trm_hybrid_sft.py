@@ -174,7 +174,7 @@ class ChainOfThoughtDataset(Dataset):
             self.dataset = load_dataset("gsm8k", "main", split=split)
             self.format_func = self._format_gsm8k
         elif dataset_name == "natural_reasoning":
-            self.dataset = load_dataset("facebook/natural_reasoning", split=split)
+            self.dataset = load_dataset("facebook/natural_reasoning", split='train')
             self.format_func = self._format_natural_reasoning
         elif dataset_name == "strategyqa":
             self.dataset = load_dataset("wics/strategy-qa", split=split)
