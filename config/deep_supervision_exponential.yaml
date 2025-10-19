@@ -1,0 +1,44 @@
+# Deep Supervision Training Config - Exponential Decay
+# Strongly emphasizes later recursive steps
+
+defaults:
+  - arch: recursive_llm
+  - _self_
+
+hydra:
+  output_subdir: null
+
+# Data paths
+data_paths: ['data/arc-aug-1000']
+data_paths_test: []
+
+evaluators:
+  - name: arc@ARC
+
+# Training hyperparameters
+global_batch_size: 768
+epochs: 100000
+eval_interval: 1000
+checkpoint_every_eval: True
+
+lr: 1e-4
+lr_min_ratio: 0.1
+lr_warmup_steps: 2000
+
+beta1: 0.9
+beta2: 0.95
+weight_decay: 0.1
+
+seed: 0
+min_eval_interval: 0
+
+# Deep supervision settings - EXPONENTIAL DECAY
+deep_supervision_enabled: True
+deep_supervision_weight: 0.5
+deep_supervision_schedule: "exponential_decay"
+curriculum_enabled: False
+log_per_step_losses: True
+compute_gradient_stats: False
+
+# Logging
+log_dir: "runs/deep_supervision_exponential"

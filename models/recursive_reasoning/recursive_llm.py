@@ -24,8 +24,8 @@ class RecursiveLLM_Carry:
     steps: torch.Tensor
     halted: torch.Tensor
     current_data: Dict[str, torch.Tensor]
-    # for deep supervision: list of pre-detached z_H states
-    zH_pre_detach: List[torch.Tensor]
+    # for deep supervision: list of intermediate z_H states from all H_cycles
+    zH_intermediates: List[torch.Tensor]
 
 class RecursiveLLMConfig(BaseModel):
     batch_size: int
@@ -46,6 +46,9 @@ class RecursiveLLMConfig(BaseModel):
     no_ACT_continue: bool = True
     pretrained_model_name: Optional[str] = None
     freeze_embeddings: bool = True
+    # Deep supervision: supervise all intermediate H_cycle outputs
+    enable_deep_supervision: bool = False
+    deep_supervision_weight: float = 0.5  # Weight for intermediate losses
 
 class RecursiveLLMBlock(nn.Module):
     def __init__(self, config: RecursiveLLMConfig) -> None:
@@ -160,7 +163,7 @@ class RecursiveLLM_Inner(nn.Module):
             z_L=torch.where(reset_flag.view(-1, 1, 1), self.L_init, carry.z_L),
         )
 
-    def forward(self, carry: RecursiveLLM_InnerCarry, batch: Dict[str, torch.Tensor]) -> Tuple[RecursiveLLM_InnerCarry, torch.Tensor, Tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
+    def forward(self, carry: RecursiveLLM_InnerCarry, batch: Dict[str, torch.Tensor], t: Optional[int] = None, enable_deep_supervision: bool = False) -> Tuple[RecursiveLLM_InnerCarry, torch.Tensor, Tuple[torch.Tensor, torch.Tensor], List[torch.Tensor]]:
         seq_info = dict(
             cos_sin=self.rotary_emb() if hasattr(self, "rotary_emb") else None,
         )
@@ -172,24 +175,38 @@ class RecursiveLLM_Inner(nn.Module):
             input_embeddings = self._input_embeddings(batch["inputs"])
 
         z_H, z_L = carry.z_H, carry.z_L
-        # H_cycles-1 without grad
-        with torch.no_grad():
-            for _H_step in range(self.config.H_cycles - 1):
+
+        # Store intermediate z_H states for deep supervision
+        z_H_intermediates = []
+
+        if enable_deep_supervision:
+            # All H_cycles with grad for deep supervision
+            for _H_step in range(self.config.H_cycles):
                 for _L_step in range(self.config.L_cycles):
                     z_L = self.L_level(z_L, z_H + input_embeddings, **seq_info)
                 z_H = self.L_level(z_H, z_L, **seq_info)
-        
-        # 1 with grad
-        for _L_step in range(self.config.L_cycles):
-            z_L = self.L_level(z_L, z_H + input_embeddings, **seq_info)
-        z_H = self.L_level(z_H, z_L, **seq_info)
+                z_H_intermediates.append(z_H)
+        else:
+            # Original behavior: H_cycles-1 without grad, last 1 with grad
+            with torch.no_grad():
+                for _H_step in range(self.config.H_cycles - 1):
+                    for _L_step in range(self.config.L_cycles):
+                        z_L = self.L_level(z_L, z_H + input_embeddings, **seq_info)
+                    z_H = self.L_level(z_H, z_L, **seq_info)
 
-        # save pre-detach hidden state for deep supervision
-        z_H_pre = z_H
+            # 1 with grad
+            for _L_step in range(self.config.L_cycles):
+                z_L = self.L_level(z_L, z_H + input_embeddings, **seq_info)
+            z_H = self.L_level(z_H, z_L, **seq_info)
+            z_H_intermediates.append(z_H)
+
         new_carry = RecursiveLLM_InnerCarry(z_H=z_H.detach(), z_L=z_L.detach())
-        output = self.lm_head(z_H)
+        if t is not None:
+            output = self.lm_head(z_H[:, t:t+1, :])
+        else:
+            output = self.lm_head(z_H)
         q_logits = self.q_head(z_H[:, 0]).to(torch.float32) # Q-head uses the first token's state
-        return new_carry, output, (q_logits[..., 0], q_logits[..., 1]), z_H_pre
+        return new_carry, output, (q_logits[..., 0], q_logits[..., 1]), z_H_intermediates
 
 class RecursiveLLM(nn.Module):
     """ACT wrapper."""
@@ -215,22 +232,33 @@ class RecursiveLLM(nn.Module):
             steps=steps,
             halted=halted,
             current_data={k: torch.empty_like(v) for k, v in batch.items()},
-            zH_pre_detach=[]
+            zH_intermediates=[]
         )
         
-    def forward(self, carry: RecursiveLLM_Carry, batch: Dict[str, torch.Tensor]) -> Tuple[RecursiveLLM_Carry, Dict[str, torch.Tensor]]:
+    def forward(self, carry: RecursiveLLM_Carry, batch: Dict[str, torch.Tensor], t: Optional[int] = None, enable_deep_supervision: bool = False) -> Tuple[RecursiveLLM_Carry, Dict[str, torch.Tensor]]:
         new_inner_carry = self.inner.reset_carry(carry.halted, carry.inner_carry)
         new_steps = torch.where(carry.halted, 0, carry.steps)
         new_current_data = {k: torch.where(carry.halted.view((-1,) + (1,) * (batch[k].ndim - 1)), batch[k], v) for k, v in carry.current_data.items()}
 
-        new_inner_carry, logits, (q_halt_logits, q_continue_logits), z_H_pre = \
-            self.inner(new_inner_carry, new_current_data)
+        new_inner_carry, logits, (q_halt_logits, q_continue_logits), z_H_intermediates = \
+            self.inner(new_inner_carry, new_current_data, t=t, enable_deep_supervision=enable_deep_supervision)
 
         outputs = {
             "logits": logits,
             "q_halt_logits": q_halt_logits,
             "q_continue_logits": q_continue_logits
         }
+
+        # Add intermediate logits for deep supervision
+        if enable_deep_supervision and z_H_intermediates:
+            intermediate_logits = []
+            for z_H_step in z_H_intermediates:
+                if t is not None:
+                    step_logits = self.inner.lm_head(z_H_step[:, t:t+1, :])
+                else:
+                    step_logits = self.inner.lm_head(z_H_step)
+                intermediate_logits.append(step_logits)
+            outputs["intermediate_logits"] = intermediate_logits
 
         with torch.no_grad():
             new_steps = new_steps + 1
@@ -247,12 +275,12 @@ class RecursiveLLM(nn.Module):
                 halted = halted & (new_steps >= min_halt_steps)
 
                 if not self.config.no_ACT_continue:
-                    _, _, (next_q_halt_logits, next_q_continue_logits) = self.inner(new_inner_carry, new_current_data)
+                    _, _, (next_q_halt_logits, next_q_continue_logits), _ = self.inner(new_inner_carry, new_current_data)
                     outputs["target_q_continue"] = torch.sigmoid(torch.where(is_last_step, next_q_halt_logits, torch.maximum(next_q_halt_logits, next_q_continue_logits)))
 
-        # record the pre-detach z_H for deep supervision
+        # record the intermediate z_H states for deep supervision
         new_carry = RecursiveLLM_Carry(
             new_inner_carry, new_steps, halted, new_current_data,
-            carry.zH_pre_detach + [z_H_pre]
+            carry.zH_intermediates + z_H_intermediates
         )
         return new_carry, outputs

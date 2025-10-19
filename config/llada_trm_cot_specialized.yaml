@@ -1,0 +1,42 @@
+# LLaDA-TRM Hybrid: Phase 3 - CoT Specialization Configuration
+# Specialized training for chain-of-thought reasoning
+# Use after fine-tuning for optimal reasoning performance
+
+model:
+  llada_model_name: "inclusionAI/LLaDA-MoE-7B-A1B-Instruct"
+  freeze_backbone: false
+  chunk_size: 12  # Smaller chunks for finer control
+  max_recursive_steps: 12  # More refinement iterations
+  head_hidden_size: 768  # Larger head for complex reasoning
+  head_layers: 4
+  refine_low_confidence_only: false  # Refine all chunks
+  min_confidence: 0.7
+  enable_deep_supervision: true
+  deep_supervision_weight: 0.5
+  convergence_threshold: 0.005  # Stricter convergence
+
+dataset:
+  name: "gsm8k"  # Math reasoning
+  max_length: 1024
+  train_split: "train"
+  val_split: "test"
+
+training:
+  batch_size: 1  # Very small batch for long sequences
+  num_epochs: 10
+  lr: 1e-5  # Very low LR for stability
+  weight_decay: 0.02
+  grad_clip: 0.5
+  warmup_steps: 500
+
+system:
+  device: "cuda"
+  num_workers: 2
+  output_dir: "./outputs/llada_trm_cot"
+  save_interval: 2
+
+logging:
+  use_wandb: true
+  wandb_project: "llada-trm-hybrid"
+  run_name: "cot_specialized"
+  log_interval: 5

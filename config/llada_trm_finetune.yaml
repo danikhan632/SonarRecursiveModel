@@ -1,0 +1,40 @@
+# LLaDA-TRM Hybrid: Phase 2 - Fine-tuning Configuration
+# Fine-tune the entire model (head + optionally backbone) on reasoning tasks
+# Use after warmup phase to jointly optimize both components
+
+model:
+  llada_model_name: "inclusionAI/LLaDA-MoE-7B-A1B-Instruct"
+  freeze_backbone: false  # Allow backbone fine-tuning
+  chunk_size: 16
+  max_recursive_steps: 10
+  head_hidden_size: 512
+  head_layers: 3  # Slightly deeper for more capacity
+  refine_low_confidence_only: true
+  min_confidence: 0.6
+  enable_deep_supervision: true
+  deep_supervision_weight: 0.3
+
+dataset:
+  name: "natural_reasoning"
+  max_length: 768  # Longer sequences for complex reasoning
+  train_split: "train"
+  val_split: "validation"
+
+training:
+  batch_size: 2  # Smaller batch for memory
+  num_epochs: 5
+  lr: 5e-5  # Lower LR for fine-tuning
+  weight_decay: 0.01
+  grad_clip: 1.0
+  warmup_steps: 200
+
+system:
+  device: "cuda"
+  num_workers: 4
+  output_dir: "./outputs/llada_trm_finetune"
+  save_interval: 1
+
+logging:
+  use_wandb: true
+  wandb_project: "llada-trm-hybrid"
+  log_interval: 20

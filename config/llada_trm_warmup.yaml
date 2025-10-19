@@ -1,0 +1,38 @@
+# LLaDA-TRM Hybrid: Phase 1 - Warmup Configuration
+# Train only the recursive refinement head with frozen LLaDA backbone
+# Use this for initial training to warm up the head without disturbing pretrained weights
+
+model:
+  llada_model_name: "inclusionAI/LLaDA-MoE-7B-A1B-Instruct"
+  freeze_backbone: true
+  chunk_size: 16
+  max_recursive_steps: 8
+  head_hidden_size: 512
+  head_layers: 2
+  refine_low_confidence_only: true
+  min_confidence: 0.5
+
+dataset:
+  name: "gsm8k"
+  max_length: 512
+  train_split: "train"
+  val_split: "test"
+
+training:
+  batch_size: 4
+  num_epochs: 3
+  lr: 1e-4
+  weight_decay: 0.01
+  grad_clip: 1.0
+  warmup_steps: 100
+
+system:
+  device: "cuda"
+  num_workers: 4
+  output_dir: "./outputs/llada_trm_warmup"
+  save_interval: 1
+
+logging:
+  use_wandb: false
+  wandb_project: "llada-trm-hybrid"
+  log_interval: 10
