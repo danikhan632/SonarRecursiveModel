@@ -335,6 +335,8 @@ class LLaDATRMHybrid(nn.Module):
                 use_act=self.config.use_act,
                 act_exploration_prob=self.config.act_exploration_prob,
             )
+            # Convert to correct dtype to match backbone
+            slot_refiner.to_dtype(self.forward_dtype)
             self.refinement_head = SlotTRMRefinerAdapter(slot_refiner, self.config)
             print(f"  - {len(slot_refiner.blocks)} transformer blocks with attention for cross-chunk reasoning")
             print(f"  - Slot projections for semantic decomposition (context, reason, refine, confidence)")

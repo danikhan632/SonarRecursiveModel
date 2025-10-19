@@ -338,6 +338,13 @@ class SlotTRMRefiner(nn.Module):
                 self.q_head.weight.zero_()
                 self.q_head.bias.fill_(-5.0)  # Start pessimistic
 
+    def to_dtype(self, dtype: torch.dtype):
+        """Convert all Linear and LayerNorm layers to specified dtype"""
+        for module in self.modules():
+            if isinstance(module, (nn.Linear, nn.LayerNorm)):
+                module.to(dtype)
+        return self
+
     def forward(
         self,
         x: torch.Tensor,
@@ -354,7 +361,14 @@ class SlotTRMRefiner(nn.Module):
             refined: [B, L, d_model] - refined embedding
             stats: dict with 'steps', 'confidence', 'delta_norms', and optionally Q-values
         """
-        B, L, _ = x.shape
+        B, _ = x.shape[:2]
+
+        # Store original dtype and ensure input matches module dtype
+        original_dtype = x.dtype
+        # Get the dtype from the first layer norm
+        module_dtype = next(self.norm_in.parameters()).dtype
+        x = x.to(module_dtype)
+
         h = self.norm_in(x)
 
         # Track statistics
@@ -469,6 +483,9 @@ class SlotTRMRefiner(nn.Module):
 
             # Store refinement slot for next iteration's delta computation
             prev_refine_slot = refine_slot.detach()
+
+        # Convert back to original dtype to match input
+        h = h.to(original_dtype)
 
         if return_stats:
             stats = {
