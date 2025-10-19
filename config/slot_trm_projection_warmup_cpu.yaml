@@ -50,9 +50,15 @@ training:
   gradient_accumulation_steps: 16  # INCREASED to maintain effective batch size
   num_epochs: 2  # REDUCED from 5 for quick testing
 
-  # Optimizer
-  lr: 0.0005
+  # Optimizer - Muon (recommended for training projection matrices)
+  use_muon: true  # Use Muon optimizer instead of AdamW
+  muon_lr: 0.02  # Muon learning rate (for 2D weight matrices)
+  adam_lr: 0.0003  # Adam learning rate (for biases, norms, embeddings)
+  muon_momentum: 0.95  # Muon momentum parameter
   weight_decay: 0.01
+
+  # Fallback to AdamW if use_muon: false
+  lr: 0.0005
   adam_beta1: 0.9
   adam_beta2: 0.999
   adam_epsilon: 0.00000001

@@ -42,6 +42,9 @@ from models.recursive_reasoning.slot_trm_refiner import (
     create_slot_trm_refiner,
 )
 
+# Import Muon optimizer
+from muon import SingleDeviceMuonWithAuxAdam
+
 
 def load_config(config_path: str) -> Dict:
     """Load YAML configuration file"""
@@ -535,14 +538,63 @@ def main():
     # Create optimizer (only trainable params)
     # Convert config values to proper types (YAML can load as strings)
     train_cfg = config['training']
-    optimizer = AdamW(
-        trainable_params,
-        lr=safe_float(train_cfg['lr'], 1e-4),
-        weight_decay=safe_float(train_cfg.get('weight_decay', 0.01), 0.01),
-        betas=(safe_float(train_cfg.get('adam_beta1', 0.9), 0.9),
-               safe_float(train_cfg.get('adam_beta2', 0.999), 0.999)),
-        eps=safe_float(train_cfg.get('adam_epsilon', 1e-8), 1e-8),
-    )
+
+    # Check if using Muon optimizer
+    use_muon = train_cfg.get('use_muon', False)
+
+    if use_muon:
+        print("\n" + "=" * 70)
+        print("Setting up Muon optimizer")
+        print("=" * 70)
+
+        # Separate parameters for Muon (2D+ matrices) and Adam (biases, norms)
+        muon_params = []
+        adam_params = []
+
+        for n, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+
+            # Use Muon for 2D+ weight matrices (excluding bias, norm, embedding)
+            if p.ndim >= 2 and not any(k in n.lower() for k in ["bias", "norm", "embedding"]):
+                muon_params.append(p)
+            else:
+                adam_params.append(p)
+
+        print(f"Muon parameters: {len(muon_params)}")
+        print(f"Adam parameters: {len(adam_params)}")
+
+        # Muon LR and Adam LR can be different
+        muon_lr = safe_float(train_cfg.get('muon_lr', 0.02), 0.02)
+        adam_lr = safe_float(train_cfg.get('adam_lr', 3e-4), 3e-4)
+        muon_momentum = safe_float(train_cfg.get('muon_momentum', 0.95), 0.95)
+        weight_decay = safe_float(train_cfg.get('weight_decay', 0.01), 0.01)
+
+        print(f"Muon LR: {muon_lr}")
+        print(f"Adam LR: {adam_lr}")
+        print(f"Muon momentum: {muon_momentum}")
+        print(f"Weight decay: {weight_decay}")
+        print("=" * 70)
+
+        param_groups = [
+            {"params": adam_params, "lr": adam_lr,
+             "weight_decay": weight_decay, "use_muon": False},
+            {"params": muon_params, "lr": muon_lr,
+             "weight_decay": weight_decay, "use_muon": True,
+             "momentum": muon_momentum}
+        ]
+
+        optimizer = SingleDeviceMuonWithAuxAdam(param_groups)
+    else:
+        # Use standard AdamW
+        optimizer = AdamW(
+            trainable_params,
+            lr=safe_float(train_cfg['lr'], 1e-4),
+            weight_decay=safe_float(train_cfg.get('weight_decay', 0.01), 0.01),
+            betas=(safe_float(train_cfg.get('adam_beta1', 0.9), 0.9),
+                   safe_float(train_cfg.get('adam_beta2', 0.999), 0.999)),
+            eps=safe_float(train_cfg.get('adam_epsilon', 1e-8), 1e-8),
+        )
 
     # Create scheduler
     warmup_steps = safe_int(train_cfg.get('warmup_steps', 200), 200)
