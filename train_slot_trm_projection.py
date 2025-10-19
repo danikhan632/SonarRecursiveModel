@@ -429,6 +429,40 @@ class SlotProjectionTrainer:
 
         print(f"✓ Saved checkpoint: {checkpoint_path}")
 
+    def load_checkpoint(self, checkpoint_path: str):
+        """Load checkpoint and resume training state"""
+        print(f"\n{'='*70}")
+        print(f"Loading checkpoint from: {checkpoint_path}")
+        print(f"{'='*70}")
+
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+
+        # Load model state (only trainable parameters)
+        model_state = checkpoint['model_state_dict']
+        missing, unexpected = self.model.load_state_dict(model_state, strict=False)
+
+        if missing:
+            print(f"⚠ Missing keys (frozen params, expected): {len(missing)}")
+        if unexpected:
+            print(f"⚠ Unexpected keys: {unexpected}")
+
+        # Load optimizer state
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        print(f"✓ Loaded optimizer state")
+
+        # Load scheduler state
+        if self.scheduler and checkpoint.get('scheduler_state_dict'):
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            print(f"✓ Loaded scheduler state")
+
+        # Restore training state
+        self.global_step = checkpoint.get('global_step', 0)
+        self.best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+
+        print(f"✓ Resumed from step {self.global_step}")
+        print(f"✓ Best val loss: {self.best_val_loss:.4f}")
+        print(f"{'='*70}\n")
+
     def train(self):
         """Main training loop"""
         print("\n" + "=" * 70)
@@ -635,6 +669,10 @@ def main():
         device=device,
         config=config,
     )
+
+    # Resume from checkpoint if specified
+    if args.resume:
+        trainer.load_checkpoint(args.resume)
 
     # Train
     trainer.train()
