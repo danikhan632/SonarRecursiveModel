@@ -186,26 +186,33 @@ class SlotProjectionTrainer:
         """
         Compute orthogonality regularization to encourage slot projections
         to focus on different subspaces.
+
+        Only computes orthogonality between matrices with the same input dimension.
         """
         loss = torch.tensor(0.0, device=self.device)
 
-        # Find slot projection layers
-        slot_proj_weights = []
+        # Find slot projection layers, grouped by input dimension
+        slot_proj_weights = {}
         for name, param in self.model.named_parameters():
             if 'slot_proj.W_' in name and 'weight' in name:
-                slot_proj_weights.append(param)
+                # param.shape is (out_dim, in_dim)
+                in_dim = param.shape[1]
+                if in_dim not in slot_proj_weights:
+                    slot_proj_weights[in_dim] = []
+                slot_proj_weights[in_dim].append(param)
 
-        # Compute pairwise orthogonality penalty
-        if len(slot_proj_weights) > 1:
-            for i in range(len(slot_proj_weights)):
-                for j in range(i + 1, len(slot_proj_weights)):
-                    W_i = slot_proj_weights[i]
-                    W_j = slot_proj_weights[j]
+        # Compute pairwise orthogonality penalty for matrices with same input dim
+        for in_dim, weights in slot_proj_weights.items():
+            if len(weights) > 1:
+                for i in range(len(weights)):
+                    for j in range(i + 1, len(weights)):
+                        W_i = weights[i]  # (out_i, in_dim)
+                        W_j = weights[j]  # (out_j, in_dim)
 
-                    # Gram matrix: W_i @ W_j^T
-                    # We want this to be close to zero (orthogonal)
-                    overlap = torch.mm(W_i, W_j.t())
-                    loss += overlap.pow(2).sum()
+                        # Compute correlation in input space: W_i @ W_j^T
+                        # Result shape: (out_i, out_j)
+                        overlap = torch.mm(W_i, W_j.t())
+                        loss += overlap.pow(2).sum()
 
         return loss
 
