@@ -116,7 +116,7 @@ system:
   output_dir: "./outputs/slot_trm_projection_warmup"
   checkpoint_dir: "./outputs/slot_trm_projection_warmup/checkpoints"
   save_total_limit: 3  # Keep only 3 best checkpoints
-  checkpoint_interval: 1000  # Save checkpoint every N steps
+  checkpoint_interval: 1000  # Save checkpoint every N step
 
   # Reproducibility
   seed: 42

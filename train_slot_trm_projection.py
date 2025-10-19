@@ -358,9 +358,10 @@ class SlotProjectionTrainer:
 
         total_loss = 0.0
         total_steps = 0
+        max_eval_steps = self.val_config.get('eval_steps', 100)
 
         with torch.no_grad():
-            for batch in tqdm(self.val_loader, desc="Validating", leave=False):
+            for batch in tqdm(self.val_loader, desc="Validating", leave=False, total=max_eval_steps):
                 input_ids = batch["input_ids"].to(self.device)
                 attention_mask = batch["attention_mask"].to(self.device)
                 labels = batch["labels"].to(self.device)
@@ -376,6 +377,10 @@ class SlotProjectionTrainer:
                 loss = outputs["loss"]
                 total_loss += loss.item()
                 total_steps += 1
+
+                # Limit validation steps
+                if total_steps >= max_eval_steps:
+                    break
 
         avg_loss = total_loss / total_steps if total_steps > 0 else 0.0
 
