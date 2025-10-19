@@ -1,0 +1,131 @@
+# Slot TRM Projection Training - CPU-Optimized Configuration
+# Use this if training on CPU (no GPU available)
+
+model:
+  # Base model configuration
+  llada_model_name: "inclusionAI/LLaDA-MoE-7B-A1B-Instruct"
+  freeze_backbone: true
+
+  # Slot TRM refiner configuration
+  refiner_type: "slot_based"
+  refiner_size: "base"
+
+  # Recursive refinement
+  max_recursive_steps: 2  # REDUCED for CPU
+  use_gating: true
+  delta_scale: 0.1
+
+  # Chunking
+  chunk_size: 16
+  max_chunks: 4  # REDUCED for CPU
+
+  # Training mode
+  sft_mode: true
+  enable_deep_supervision: true
+  deep_supervision_weight: 0.3
+  mask_probability: 0.3
+
+  # Selective refinement
+  refine_low_confidence_only: true
+  min_confidence: 0.5
+
+  # CPU-specific: use float32 instead of bfloat16
+  forward_dtype: "float32"
+
+# Trainable parameters specification
+training_params:
+  trainable_modules:
+    - "refinement_head"
+  train_layer_norms: true
+
+dataset:
+  name: "natural_reasoning"  # Natural reasoning dataset
+  max_length: 256  # REDUCED from 512 for CPU
+  train_split: "train[:1000]"  # Use only 1000 samples for quick testing
+  val_split: "validation[:100]"  # Use only 100 validation samples
+
+training:
+  # CPU-optimized settings
+  batch_size: 1  # REDUCED from 4
+  gradient_accumulation_steps: 16  # INCREASED to maintain effective batch size
+  num_epochs: 2  # REDUCED from 5 for quick testing
+
+  # Optimizer
+  lr: 0.0005
+  weight_decay: 0.01
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_epsilon: 0.00000001
+
+  # Gradient management
+  grad_clip: 1.0
+  max_grad_norm: 1.0
+
+  # Learning rate schedule
+  warmup_steps: 50  # REDUCED from 200
+  lr_scheduler: "cosine"
+  min_lr: 0.000001
+
+  # Regularization
+  dropout: 0.1
+  attention_dropout: 0.1
+
+  # Early stopping
+  patience: 2
+  metric: "val_loss"
+  mode: "min"
+
+validation:
+  eval_interval: 100  # REDUCED from 500
+  eval_steps: 20  # REDUCED from 100
+  save_best_only: true
+  save_interval: 1
+
+system:
+  device: "cpu"  # Explicitly set to CPU
+  mixed_precision: false  # Disable for CPU
+  compile: false
+
+  # Data loading - CPU optimized
+  num_workers: 0  # IMPORTANT: Use 0 for CPU to avoid multiprocessing overhead
+  pin_memory: false  # Disable pin_memory for CPU
+  prefetch_factor: 2
+
+  # Output
+  output_dir: "./outputs/slot_trm_projection_cpu_test"
+  checkpoint_dir: "./outputs/slot_trm_projection_cpu_test/checkpoints"
+  save_total_limit: 2
+  checkpoint_interval: 1000  # Save checkpoint every N steps
+
+  # Reproducibility
+  seed: 42
+  deterministic: false
+
+logging:
+  use_wandb: false
+  use_tensorboard: false
+  use_csv: true
+
+  wandb_project: "slot-trm-projection-cpu"
+  wandb_run_name: "cpu-test"
+
+  log_interval: 10
+  log_grad_norms: true
+  log_param_norms: false  # Disable to reduce overhead
+  log_slot_statistics: false  # Disable to reduce overhead
+
+  log_metrics:
+    - "loss"
+    - "refinement_steps"
+    - "chunk_confidence"
+    - "learning_rate"
+    - "grad_norm"
+
+# Advanced options
+advanced:
+  gradient_checkpointing: false  # Disable for CPU (marginal benefit, adds overhead)
+  orthogonality_weight: 0.0  # Disable to simplify training
+  confidence_calibration: false
+  detect_anomaly: false
+  profile: false
+  debug_print_interval: 100
