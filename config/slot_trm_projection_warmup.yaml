@@ -18,7 +18,7 @@ model:
   # Recursive refinement
   max_recursive_steps: 4  # Start conservative (max steps for ACT, or fixed if ACT disabled)
   use_gating: true  # Learn slot contribution gates
-  delta_scale: 0.1  # Conservative delta updates
+  delta_scale: 0.02  # Very conservative delta updates (reduced from 0.1 for stability)
 
   # Adaptive Computation Time (ACT) - learned halting
   use_act: false  # Enable ACT for adaptive halting (saves compute)
@@ -66,9 +66,9 @@ training_params:
 
 dataset:
   name: "natural_reasoning"  # Natural reasoning dataset with extended chains
-  max_length: 512
-  train_split: "train"
-  val_split: "validation"
+  max_length: 256  # Reduced from 512 for faster training
+  train_split: "train[:10000]"  # Use only 10k samples for faster iteration
+  val_split: "validation[:1000]"  # Use only 1k validation samples
 
   # Preprocessing
   chunk_aware: true  # Format data to align with chunk boundaries
@@ -76,14 +76,14 @@ dataset:
 
 training:
   # Warmup phase: small learning rate, few epochs
-  batch_size: 8
-  gradient_accumulation_steps: 4  # Effective batch size = 32
-  num_epochs: 5
+  batch_size: 16  # Increased from 8 (if OOM, reduce back to 8)
+  gradient_accumulation_steps: 4  # Increased for effective batch size = 64 (more stable)
+  num_epochs: 3  # Reduced from 5 for faster iteration
 
   # Optimizer - Muon (recommended for training projection matrices)
   use_muon: true  # Use Muon optimizer instead of AdamW
-  muon_lr: 0.02  # Muon learning rate (for 2D weight matrices)
-  adam_lr: 0.0003  # Adam learning rate (for biases, norms, embeddings)
+  muon_lr: 0.005  # Reduced from 0.02 for stability (was causing spikes)
+  adam_lr: 0.0001  # Reduced from 0.0003 for stability
   muon_momentum: 0.95  # Muon momentum parameter
   weight_decay: 0.01
 
@@ -93,15 +93,15 @@ training:
   adam_beta2: 0.999
   adam_epsilon: 0.00000001  # 1e-8
 
-  # Gradient management
-  grad_clip: 1.0
-  max_grad_norm: 1.0
+  # Gradient management - TIGHTENED for stability
+  grad_clip: 0.5  # Reduced from 1.0 - catch spikes earlier
+  max_grad_norm: 0.5  # Reduced from 1.0 - prevent gradient explosions
 
   # Learning rate schedule
-  warmup_steps: 200
-  warmup_ratio: 0.05  # 5% of training
+  warmup_steps: 500  # Increased from 200 for smoother warmup
+  warmup_ratio: 0.1  # Increased from 0.05 (10% of training)
   lr_scheduler: "cosine"  # cosine, linear, or constant
-  min_lr: 0.000001  # 1e-6
+  min_lr: 0.0000001  # Reduced from 1e-6 to 1e-7
 
   # Regularization
   dropout: 0.1
@@ -113,15 +113,15 @@ training:
   mode: "min"  # Minimize validation loss
 
 validation:
-  eval_interval: 500  # Evaluate every N steps
-  eval_steps: 100  # Number of validation steps
+  eval_interval: 200  # Evaluate every N steps (reduced from 500 for faster feedback)
+  eval_steps: 50  # Number of validation steps (reduced from 100)
   save_best_only: true
   save_interval: 1  # Save every N epochs
 
 system:
   device: "cuda"
   mixed_precision: true  # Use AMP for faster training
-  compile: false  # torch.compile (requires PyTorch 2.0+)
+  compile: true  # torch.compile for 20-40% speedup (requires PyTorch 2.0+)
 
   # Data loading
   num_workers: 4
@@ -131,8 +131,8 @@ system:
   # Output
   output_dir: "./outputs/slot_trm_projection_warmup"
   checkpoint_dir: "./outputs/slot_trm_projection_warmup/checkpoints"
-  save_total_limit: 3  # Keep only 3 best checkpoints
-  checkpoint_interval: 1000  # Save checkpoint every N step
+  save_total_limit: 2  # Keep only 2 best checkpoints
+  checkpoint_interval: 200  # Save checkpoint every N steps (reduced from 1000)
 
   # Reproducibility
   seed: 42
@@ -146,13 +146,13 @@ logging:
 
   # WandB configuration
   wandb_project: "slot-trm-projection"
-  wandb_run_name: "warmup-phase1"
+  wandb_run_name: "warmup-phase1-fast"
   wandb_entity: null  # Your wandb username/team
 
   # Logging frequency
-  log_interval: 10  # Log every N steps
-  log_grad_norms: true
-  log_param_norms: true
+  log_interval: 50  # Log every N steps (reduced from 10 for less overhead)
+  log_grad_norms: false  # Disabled for speed
+  log_param_norms: false  # Disabled for speed
   log_slot_statistics: true  # Log slot-specific metrics
 
   # What to log
@@ -175,11 +175,11 @@ advanced:
   gradient_checkpointing: true
 
   # Orthogonality regularization for slots
-  orthogonality_weight: 0.01  # Penalize overlap between slot projections
+  orthogonality_weight: 0.001  # Reduced from 0.01 for stability - penalize overlap between slot projections
 
   # Confidence calibration
   confidence_calibration: true
-  calibration_weight: 0.05
+  calibration_weight: 0.01  # Reduced from 0.05 for stability
 
   # Debug options
   detect_anomaly: false  # Enables anomaly detection (slow)
