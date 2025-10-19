@@ -26,6 +26,7 @@ from transformers import AutoModel, AutoTokenizer
 
 from models.common import trunc_normal_init_
 from models.layers import rms_norm, SwiGLU, CastedLinear
+from models.recursive_reasoning.slot_trm_refiner import SlotTRMRefiner, create_slot_trm_refiner
 
 # Debug mode controlled by environment variable
 DEBUG = os.environ.get('DEBUG', 'False').lower() in ('true', '1', 'yes')
@@ -87,6 +88,15 @@ class LLaDATRMConfig(BaseModel):
     hidden_size: int = 2048  # must match LLaDA hidden size
     head_hidden_size: int = 512  # internal head dimension
     head_layers: int = 2  # number of refinement layers
+
+    # Refiner type selection
+    refiner_type: str = "basic"  # "basic" or "attn_refiner" (attention-based with slots)
+    refiner_size: str = "base"  # "tiny", "base", or "large" (only for attn_refiner)
+
+    # Adaptive Computation Time (ACT) for learned halting
+    use_act: bool = False  # Enable ACT for adaptive halting
+    act_exploration_prob: float = 0.1  # Exploration probability during training
+    act_q_loss_weight: float = 0.1  # Weight for Q-learning loss
 
     # Recursion control
     max_recursive_steps: int = 8
@@ -225,6 +235,46 @@ class RecursiveRefinementHead(nn.Module):
         return current_emb, confidence, step + 1
 
 
+class SlotTRMRefinerAdapter(nn.Module):
+    """
+    Adapter to make SlotTRMRefiner compatible with RecursiveRefinementHead interface.
+
+    This allows using SlotTRMRefiner (which has attention for cross-chunk reasoning)
+    in place of the basic RecursiveRefinementHead.
+    """
+
+    def __init__(self, slot_refiner: SlotTRMRefiner, config: 'LLaDATRMConfig'):
+        super().__init__()
+        self.slot_refiner = slot_refiner
+        self.config = config
+
+    def forward(
+        self,
+        chunk_emb: torch.Tensor,  # [B, chunk_size, hidden_dim]
+        max_steps: int = 8,
+        convergence_threshold: float = 0.01,
+    ) -> Tuple[torch.Tensor, torch.Tensor, int]:
+        """
+        Forward pass compatible with RecursiveRefinementHead interface.
+
+        Returns:
+            refined_chunk: [B, chunk_size, hidden_dim]
+            confidence: [B] scalar confidence score
+            num_steps: int, actual steps taken (always K for SlotTRMRefiner)
+        """
+        # SlotTRMRefiner always runs K steps (no early convergence)
+        refined, stats = self.slot_refiner(chunk_emb, return_stats=True)
+
+        # Extract per-batch confidence (mean across sequence)
+        # stats['final_confidence'] is [B, L]
+        confidence = stats['final_confidence'].mean(dim=-1)  # [B]
+
+        # Number of steps is always K
+        num_steps = stats['steps']
+
+        return refined, confidence, num_steps
+
+
 class LLaDATRMHybrid(nn.Module):
     """
     Hybrid LLaDA-TRM Model
@@ -274,8 +324,25 @@ class LLaDATRMHybrid(nn.Module):
         self.config.hidden_size = actual_hidden_size
         print(f"Detected hidden size: {actual_hidden_size}")
 
-        # Recursive refinement head
-        self.refinement_head = RecursiveRefinementHead(self.config)
+        # Recursive refinement head - select based on refiner_type
+        refiner_type = self.config.refiner_type.lower()
+        if refiner_type in ["slot_based", "attn_refiner"]:
+            print(f"Creating Attention-based Refiner with Slot Decomposition (size: {self.config.refiner_size})")
+            slot_refiner = create_slot_trm_refiner(
+                d_model=actual_hidden_size,
+                size=self.config.refiner_size,
+                K=self.config.max_recursive_steps,
+                use_act=self.config.use_act,
+                act_exploration_prob=self.config.act_exploration_prob,
+            )
+            self.refinement_head = SlotTRMRefinerAdapter(slot_refiner, self.config)
+            print(f"  - {len(slot_refiner.blocks)} transformer blocks with attention for cross-chunk reasoning")
+            print(f"  - Slot projections for semantic decomposition (context, reason, refine, confidence)")
+            if self.config.use_act:
+                print(f"  - ACT enabled: Adaptive halting with Q-learning (exploration_prob={self.config.act_exploration_prob})")
+        else:
+            print("Creating Basic Refinement Head (FFN-only, no attention)")
+            self.refinement_head = RecursiveRefinementHead(self.config)
 
         # LM head for final predictions
         # Try to reuse LLaDA's LM head if available

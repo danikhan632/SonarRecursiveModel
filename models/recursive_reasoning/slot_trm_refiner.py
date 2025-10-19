@@ -15,7 +15,7 @@ Date: 2025-10-18
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 from dataclasses import dataclass
 
 
@@ -264,23 +264,29 @@ class SlotTRMRefiner(nn.Module):
         dropout: float = 0.0,
         use_gating: bool = True,
         delta_scale: float = 0.1,
+        use_act: bool = False,
+        act_exploration_prob: float = 0.1,
     ):
         """
         Args:
             d_model: Model dimension
             n_layers: Number of transformer blocks
             n_heads: Number of attention heads
-            K: Number of recursive refinement steps
+            K: Max number of recursive refinement steps (or fixed if use_act=False)
             slot_dims: (d_ctx, d_reason, d_refine, d_conf). If None, use defaults.
             expansion: FFN expansion factor
             dropout: Dropout rate
             use_gating: Whether to use learnable gates for slot contributions
             delta_scale: Scaling factor for delta updates (for stability)
+            use_act: Whether to use Adaptive Computation Time (learned halting)
+            act_exploration_prob: Exploration probability for ACT during training
         """
         super().__init__()
         self.K = K
         self.d_model = d_model
         self.delta_scale = delta_scale
+        self.use_act = use_act
+        self.act_exploration_prob = act_exploration_prob
 
         # Default slot dimensions
         if slot_dims is None:
@@ -323,12 +329,21 @@ class SlotTRMRefiner(nn.Module):
             nn.Sigmoid(),
         )
 
+        # Q-head for Adaptive Computation Time (ACT)
+        # Predicts Q-values for halt vs continue decisions
+        if self.use_act:
+            self.q_head = nn.Linear(d_conf, 2, bias=True)
+            # Init Q to (almost) zero for faster learning during bootstrapping
+            with torch.no_grad():
+                self.q_head.weight.zero_()
+                self.q_head.bias.fill_(-5.0)  # Start pessimistic
+
     def forward(
         self,
         x: torch.Tensor,
         chunk_mask: Optional[torch.Tensor] = None,
         return_stats: bool = False,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, Optional[Dict[str, torch.Tensor]]]:
         """
         Args:
             x: [B, L, d_model] - input latent (from diffusion or previous step)
@@ -337,19 +352,29 @@ class SlotTRMRefiner(nn.Module):
 
         Returns:
             refined: [B, L, d_model] - refined embedding
-            (optional) stats: dict with 'steps', 'confidence', 'delta_norms'
+            stats: dict with 'steps', 'confidence', 'delta_norms', and optionally Q-values
         """
-        B, L, D = x.shape
+        B, L, _ = x.shape
         h = self.norm_in(x)
 
         # Track statistics
-        if return_stats:
-            delta_norms = []
-            confidences = []
+        delta_norms = [] if return_stats else None
+        confidences = [] if return_stats else None
+        q_halt_logits_list = [] if (return_stats and self.use_act) else None
+        q_continue_logits_list = [] if (return_stats and self.use_act) else None
+
+        # ACT state tracking (per-batch sequence level)
+        if self.use_act:
+            # Track halting per batch item (aggregate across sequence)
+            halted = torch.zeros(B, dtype=torch.bool, device=x.device)
+            actual_steps = torch.zeros(B, dtype=torch.int32, device=x.device)
 
         prev_refine_slot = None
 
         for step in range(self.K):
+            # Skip halted sequences (only for ACT)
+            if self.use_act and halted.all():
+                break
             # Run transformer blocks and capture attention context
             h_block = h
             contexts = []
@@ -381,6 +406,18 @@ class SlotTRMRefiner(nn.Module):
             # Compute per-token confidence for adaptive updating
             confidence = self.confidence_head(conf_slot).squeeze(-1)  # [B, L]
 
+            # ACT: Compute Q-values for halt/continue decisions
+            if self.use_act:
+                # Use mean-pooled confidence slot for Q-head
+                conf_slot_pooled = conf_slot.mean(dim=1)  # [B, d_conf]
+                q_logits = self.q_head(conf_slot_pooled).to(torch.float32)  # [B, 2]
+                q_halt_logits = q_logits[:, 0]  # [B]
+                q_continue_logits = q_logits[:, 1]  # [B]
+
+                if return_stats:
+                    q_halt_logits_list.append(q_halt_logits)
+                    q_continue_logits_list.append(q_continue_logits)
+
             # Apply chunk mask if provided
             if chunk_mask is not None:
                 delta = delta * chunk_mask.unsqueeze(-1)
@@ -393,7 +430,11 @@ class SlotTRMRefiner(nn.Module):
             # Conservative clamping for stability
             delta = torch.clamp(delta, -0.5, 0.5)
 
-            # Apply update
+            # Apply update (only to non-halted sequences if using ACT)
+            if self.use_act:
+                # Mask updates for halted sequences
+                delta = delta * (~halted).view(B, 1, 1).float()
+
             h = h + delta
 
             # Track stats
@@ -401,19 +442,134 @@ class SlotTRMRefiner(nn.Module):
                 delta_norms.append(delta.norm(dim=-1).mean().item())
                 confidences.append(confidence.mean().item())
 
+            # ACT: Update halting state
+            if self.use_act:
+                with torch.no_grad():
+                    # Increment steps for non-halted sequences
+                    actual_steps = torch.where(halted, actual_steps, actual_steps + 1)
+
+                    # Check if at max steps
+                    is_last_step = actual_steps >= self.K
+
+                    # Halt decision
+                    if self.training:
+                        # During training: use Q-values with exploration
+                        new_halts = (q_halt_logits > 0) | is_last_step
+
+                        # Exploration: sometimes force random minimum steps
+                        if self.act_exploration_prob > 0:
+                            explore_mask = torch.rand(B, device=x.device) < self.act_exploration_prob
+                            min_steps = torch.randint(2, self.K + 1, (B,), device=x.device)
+                            new_halts = new_halts & (actual_steps >= min_steps) | (explore_mask & is_last_step)
+                    else:
+                        # During evaluation: always run max steps for batching consistency
+                        new_halts = is_last_step
+
+                    halted = halted | new_halts
+
             # Store refinement slot for next iteration's delta computation
             prev_refine_slot = refine_slot.detach()
 
         if return_stats:
             stats = {
-                'steps': self.K,
-                'confidence': torch.tensor(confidences).mean().item(),
+                'steps': self.K if not self.use_act else actual_steps.float().mean().item(),
+                'confidence': torch.tensor(confidences).mean().item() if confidences else 0.0,
                 'delta_norms': delta_norms,
                 'final_confidence': confidence,
             }
+
+            # Add ACT-specific stats
+            if self.use_act:
+                stats['q_halt_logits'] = torch.stack(q_halt_logits_list) if q_halt_logits_list else None
+                stats['q_continue_logits'] = torch.stack(q_continue_logits_list) if q_continue_logits_list else None
+                stats['actual_steps'] = actual_steps  # Per-batch actual steps taken
+                stats['halted'] = halted  # Which sequences halted
+
             return h, stats
 
-        return h
+        return h, None
+
+
+# ============================================================================
+# Q-Learning Loss for ACT
+# ============================================================================
+
+def compute_act_q_loss(
+    stats: Dict[str, torch.Tensor],
+    lm_loss: torch.Tensor,
+    gamma: float = 0.9,
+    loss_weight: float = 0.1,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    """
+    Compute Q-learning loss for Adaptive Computation Time (ACT).
+
+    Args:
+        stats: Statistics dict from SlotTRMRefiner with Q-values
+        lm_loss: Language modeling loss (used as reward signal)
+        gamma: Discount factor for future rewards
+        loss_weight: Weight for Q-loss relative to LM loss
+
+    Returns:
+        q_loss: Q-learning loss
+        metrics: Dict with Q-learning metrics for logging
+    """
+    if 'q_halt_logits' not in stats or stats['q_halt_logits'] is None:
+        return torch.tensor(0.0), {}
+
+    q_halt = stats['q_halt_logits']  # [K, B]
+    q_continue = stats['q_continue_logits']  # [K, B]
+    actual_steps = stats['actual_steps']  # [B]
+
+    K, B = q_halt.shape
+
+    # Reward: negative LM loss (higher is better)
+    # We want to maximize reward (minimize loss) while minimizing steps
+    reward = -lm_loss.detach()  # [B]
+
+    # Step penalty: encourage halting early if performance is good
+    step_penalty = 0.01  # Small penalty per step
+
+    # Compute target Q-values
+    # Q(halt) = reward - step_penalty * steps
+    # Q(continue) = gamma * max(Q_next_halt, Q_next_continue)
+
+    q_loss = 0.0
+    for step_idx in range(K):
+        # Get Q-values at this step
+        q_h = torch.sigmoid(q_halt[step_idx])  # [B]
+        q_c = torch.sigmoid(q_continue[step_idx])  # [B]
+
+        # Target for halt: immediate reward - step penalty
+        target_halt = reward - step_penalty * (step_idx + 1)
+
+        # Target for continue: future expected reward
+        if step_idx < K - 1:
+            # Next step Q-values (detached for target)
+            next_q_h = torch.sigmoid(q_halt[step_idx + 1].detach())
+            next_q_c = torch.sigmoid(q_continue[step_idx + 1].detach())
+            target_continue = gamma * torch.maximum(next_q_h, next_q_c)
+        else:
+            # Last step: must halt
+            target_continue = target_halt
+
+        # TD loss for halt
+        loss_halt = F.mse_loss(q_h, torch.sigmoid(target_halt))
+
+        # TD loss for continue
+        loss_continue = F.mse_loss(q_c, target_continue)
+
+        q_loss = q_loss + loss_halt + loss_continue
+
+    q_loss = q_loss / K  # Average over steps
+
+    metrics = {
+        'q_loss': q_loss.item(),
+        'avg_q_halt': torch.sigmoid(q_halt).mean().item(),
+        'avg_q_continue': torch.sigmoid(q_continue).mean().item(),
+        'avg_actual_steps': actual_steps.float().mean().item(),
+    }
+
+    return q_loss * loss_weight, metrics
 
 
 # ============================================================================
@@ -424,6 +580,8 @@ def create_slot_trm_refiner(
     d_model: int,
     size: str = 'base',
     K: int = 4,
+    use_act: bool = False,
+    act_exploration_prob: float = 0.1,
 ) -> SlotTRMRefiner:
     """
     Factory function to create slot TRM refiners with preset configurations.
@@ -431,7 +589,9 @@ def create_slot_trm_refiner(
     Args:
         d_model: Model dimension (should match your diffusion model)
         size: 'tiny', 'base', or 'large'
-        K: Number of recursive steps
+        K: Max number of recursive steps (or fixed if use_act=False)
+        use_act: Whether to use Adaptive Computation Time (learned halting)
+        act_exploration_prob: Exploration probability for ACT during training
 
     Returns:
         SlotTRMRefiner instance
@@ -465,6 +625,8 @@ def create_slot_trm_refiner(
         K=K,
         slot_dims=config['slot_dims'],
         expansion=config['expansion'],
+        use_act=use_act,
+        act_exploration_prob=act_exploration_prob,
     )
 
 

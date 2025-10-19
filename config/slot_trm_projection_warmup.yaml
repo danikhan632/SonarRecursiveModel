@@ -8,7 +8,7 @@ model:
   freeze_backbone: true  # Keep LLaDA frozen
 
   # Slot TRM refiner configuration
-  refiner_type: "slot_based"  # Use slot-based refiner instead of standard
+  refiner_type: "attn_refiner"  # Use attention-based refiner with slot decomposition
   refiner_size: "base"  # tiny, base, or large
 
   # Slot dimensions (will be auto-configured based on refiner_size)
@@ -16,9 +16,14 @@ model:
   # base: d_ctx=1024, d_reason=512, d_refine=512, d_conf=256
 
   # Recursive refinement
-  max_recursive_steps: 4  # Start conservative
+  max_recursive_steps: 4  # Start conservative (max steps for ACT, or fixed if ACT disabled)
   use_gating: true  # Learn slot contribution gates
   delta_scale: 0.1  # Conservative delta updates
+
+  # Adaptive Computation Time (ACT) - learned halting
+  use_act: false  # Enable ACT for adaptive halting (saves compute)
+  act_exploration_prob: 0.1  # Exploration probability during training
+  act_q_loss_weight: 0.1  # Weight for Q-learning loss
 
   # Chunking
   chunk_size: 16
@@ -38,12 +43,23 @@ model:
 training_params:
   # Freeze everything except these modules
   trainable_modules:
-    - "refinement_head"  # Train the refinement head (existing RecursiveRefinementHead)
-    # This includes:
-    #   - refinement_head.chunk_encoder
-    #   - refinement_head.delta_generator
-    #   - refinement_head.delta_projector
-    #   - refinement_head.confidence_scorer
+    - "refinement_head"  # Train everything in the attention-based refiner
+    # This includes THREE types of parameters:
+    #
+    # 1. ATTENTION (cross-chunk reasoning):
+    #    - refinement_head.slot_refiner.blocks.*.attn.{q,k,v,o}_proj  (~67M params)
+    #
+    # 2. MLP/FFN (feedforward processing):
+    #    - refinement_head.slot_refiner.blocks.*.ff  (~134M params)
+    #    - refinement_head.slot_refiner.delta_net  (~8M params)
+    #    - refinement_head.slot_refiner.confidence_head  (~0.1M params)
+    #
+    # 3. SLOT PROJECTIONS (semantic decomposition):
+    #    - refinement_head.slot_refiner.slot_proj.W_ctx  (context from attention)
+    #    - refinement_head.slot_refiner.slot_proj.W_reason  (logical state)
+    #    - refinement_head.slot_refiner.slot_proj.W_refine  (update direction)
+    #    - refinement_head.slot_refiner.slot_proj.W_conf  (uncertainty)
+    #    (~5M params total)
 
   # Optionally train layer norms within the refinement head
   train_layer_norms: true
